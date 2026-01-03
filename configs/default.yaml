@@ -1,17 +1,16 @@
 # Anti-Washing Pro - Default Config (Frozen)
-# schema_version: keep this in sync with JSON output "schema_version"
+# Keep this file consistent with "AntiSpin执行计划.md (V2.7 冻结版)" and the implementation steps.
 schema_version: "1.0"
+
 project:
-  name: "Anti-Washing-Pro"
-  spec_version: "v2.7-fixed"
+  name: "AntiSpin"
+  spec_version: "v2.7-frozen"
   language: "zh"
   timezone: "Europe/Zurich"
 
 reproducibility:
   random_seed: 42
   deterministic: false
-  # If true, you should set torch deterministic flags and disable some optimizations.
-  # This can slow down inference.
 
 runtime:
   device: "auto"          # auto | cpu | cuda | mps
@@ -19,24 +18,26 @@ runtime:
   num_workers: 0
   batch_size_embed: 64
   batch_size_rerank: 32
-  max_chars_per_segment: 300      # hard split very long sentences
-  max_segments_per_doc: 5000      # safety guard
   timeout_seconds: 60
+
+  # segmentation safety guard (also used by preprocessing)
+  max_chars_per_segment: 300
+  max_segments_per_doc: 5000
 
 paths:
   workspace_dir: "workspace"
   original_dir: "workspace/original"
   suspect_dir: "workspace/suspect"
   baseline_dir: "workspace/baseline"
+  suspect_corpus_dir: "workspace/suspect_corpus"  # optional
   outputs_dir: "workspace/outputs"
-  cache_dir: "workspace/outputs/cache"
   reports_dir: "workspace/outputs/reports"
   json_dir: "workspace/outputs/json"
+  cache_dir: "workspace/outputs/cache"
 
 cache:
   enabled: true
   sqlite_path: "workspace/outputs/cache/cache.sqlite"
-  # cache keys should include: model names, config hash, and text hash
   store_embeddings: true
   store_rerank_scores: true
 
@@ -51,13 +52,19 @@ models:
     name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     normalize_embeddings: true
 
+  # Optional replacement for recall embedding (must be explicitly enabled; and must be recorded in report_info.model_fingerprint)
+  recall_embedding_alt:
+    enabled: false
+    name: "shibing624/text2vec-base-chinese"
+    normalize_embeddings: true
+
   # Main scoring model (reranker). The raw output may be a logit.
   reranker:
     name: "BAAI/bge-reranker-v2-m3"
-    score_normalization: "sigmoid"     # sigmoid | none
+    score_normalization: "sigmoid"   # sigmoid | none
     # rerank_score = sigmoid(logit) to map into (0,1)
 
-  # Optional model for token-level explain/highlight (not required in early phases)
+  # Optional model for token-level explain/highlight (display only; does not change default grading logic)
   token_explain_model:
     enabled: false
     name: "hfl/chinese-roberta-wwm-ext-large"
@@ -68,12 +75,11 @@ preprocess:
   normalize_fullwidth_halfwidth: true
   normalize_whitespace: true
   keep_punctuation: true
-  stopword_removed: false
 
   segmentation:
     method: "jieba_punc_preserved"   # jieba_punc_preserved | regex_punc
-    # When a sentence is too long, split it by punctuation first, then by max_chars_per_segment.
     long_sentence_split: true
+    context_window_sentences: 1
 
 alignment:
   # top-k retrieval per source segment
@@ -88,26 +94,24 @@ alignment:
     rerank_success_min: 0.85
 
   mean_sim:
-    # Mean(Sim) is computed only over successful aligned pairs
-    # Clip low scores to reduce noise dilution
+    # Mean(Sim) is computed only over successful aligned pairs.
+    # Clip low scores to reduce noise dilution.
     sim_clip_floor: 0.70
 
 structure:
   enabled: true
-  # Path search uses only candidate pairs (top-k) to avoid O(m*n) heavy compute.
+
   path_search:
     method: "monotonic_dp"       # monotonic_dp | dtw_like
     allow_skip: true
     allow_one_to_many: true
     allow_many_to_one: true
-    max_skip_per_10: 6           # heuristic guard for extreme jumps
+    max_skip_per_10: 6
 
   kendall_tau:
     min_points: 8
-    # If tau computation fails or points < min_points, use default
     default_tau_mapped: 0.50
-    # tau_mapped = (tau + 1) / 2
-    mapping: "linear_-1_1_to_0_1"
+    mapping: "linear_-1_1_to_0_1"   # tau_mapped = (tau + 1)/2
 
 scoring:
   # S = wC*C + wT*T + wM*M, in [0,1]
@@ -118,7 +122,7 @@ scoring:
 
 baseline:
   enabled: true
-  # baseline gating uses global doc embedding similarity between A and baseline docs
+
   doc_embedding:
     method: "bi_encoder_mean_of_segments"
     cosine_threshold_start: 0.32
@@ -126,7 +130,6 @@ baseline:
     cosine_threshold_min: 0.22
 
   length_filter:
-    # keep docs whose char length is within [lenA*min_ratio, lenA*max_ratio]
     min_ratio: 0.50
     max_ratio: 2.00
 
@@ -141,25 +144,28 @@ baseline:
 
   fallback:
     enabled: true
-    # If effective_n < min_n, lower cosine threshold until min_n or cosine_threshold_min.
     warn_if_still_insufficient: true
 
 public_domain_filter:
   enabled: true
-  # Build common phrase list from baseline (only from gated baseline set)
+
+  # Common phrase mining is used only on the gated baseline set (after baseline filters).
+  # Implementation can use token n-grams (jieba) as the default.
   phrase_mining:
-    char_ngram_min: 2
-    char_ngram_max: 6
-    # phrase is "common" if it appears in >= df_ratio of baseline docs
+    method: "token_ngram_jieba"  # token_ngram_jieba | char_ngram
+    token_ngram_min: 2
+    token_ngram_max: 5
     df_ratio_common: 0.20
     max_phrases: 20000
 
+    # If you implement char n-grams instead, use the same threshold and keep these ranges consistent.
+    char_ngram_min: 2
+    char_ngram_max: 5
+
   sentence_flagging:
-    # a sentence is public-domain-like if common phrases cover >= coverage_ratio of the sentence
     coverage_ratio: 0.35
 
   handling:
-    # do NOT delete sentence from path; only downweight score
     downweight_factor: 0.70
 
 forensics:
@@ -168,13 +174,11 @@ forensics:
 
   number_overlap:
     enabled: true
-    # Count number overlap only if the aligned pair is reasonably similar
     min_rerank_for_count: 0.80
     normalize_numbers: true
 
   rare_word:
     enabled: true
-    # Rare if df <= max(min_abs, ceil(max_ratio * N))
     df_max_ratio: 0.02
     df_min_abs: 2
     tokenizer: "jieba"
@@ -183,13 +187,18 @@ forensics:
   shared_error:
     enabled: true
     patterns:
-      - "([，,。.!！?？])\\1{1,}"   # repeated punctuation
-      - "\\s{3,}"                 # too many spaces
-      - "（\\s*）"                 # empty parentheses
+      - "([，,!！?？])\\1{1,}"   # repeated punctuation
+      - "\\s{3,}"              # too many spaces
+      - "（\\s*）"              # empty parentheses
 
   key_evidence:
-    # If any evidence hits, the aligned item can be marked as key evidence.
     mark_if_any_hit: true
+
+style_deviation:               # optional experiment feature (does not affect default risk grading)
+  enabled: false
+  corpus_dir: "workspace/suspect_corpus"
+  method: "mahalanobis_3sigma"
+  min_docs: 20
 
 risk_levels:
   # Match in order: VERY_HIGH -> HIGH -> MEDIUM -> LOW
@@ -209,7 +218,9 @@ risk_levels:
     key_cnt_min: 2
     conclusion: "相似度显著离群，逻辑顺序高度一致。"
 
+  # Medium rule in the spec is OR: (quantile>=0.950) OR (S>=0.65) OR (key_cnt>=1)
   medium:
+    match_mode: "OR"
     quantile_min: 0.950
     s_total_min: 0.65
     key_cnt_min: 1
@@ -220,6 +231,14 @@ risk_levels:
 
 report:
   disclaimer: "本报告由 NLP 算法生成，旨在提供技术取证支持，建议结合人工核审。"
+
+  # These are written into report_info.score_normalization (together with runtime/model fingerprints).
+  score_normalization:
+    rerank_score: "sigmoid(logit)"
+    tau_mapped: "(tau+1)/2"
+    tau_min_points: 8
+    tau_default_when_insufficient: 0.50
+
   output_formats:
     json: true
     html: true

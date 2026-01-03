@@ -110,3 +110,7 @@ docker-compose.override.yml
 
 # Tech documentation
 docs/
+
+# Runtime workspace outputs
+workspace/
+!workspace/.gitkeep
