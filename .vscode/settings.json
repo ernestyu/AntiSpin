@@ -1,0 +1,14 @@
+{
+    // 1. 设置Windows下默认的集成终端为 PowerShell
+    "terminal.integrated.defaultProfile.windows": "PowerShell",
+
+    // 2. 明确指定Python解释器的路径 (核心)
+    // ${workspaceFolder} 是一个变量，代表你当前打开的项目根目录
+    "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+
+    // 3. (可选但推荐) 确保VS Code知道虚拟环境的位置
+    "python.venvPath": "${workspaceFolder}",
+
+    // 4. (可选但推荐) 当打开新终端时，自动激活虚拟环境
+    "python.terminal.activateEnvironment": true
+}

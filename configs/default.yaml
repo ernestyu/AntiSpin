@@ -1,0 +1,238 @@
+# Anti-Washing Pro - Default Config (Frozen)
+# schema_version: keep this in sync with JSON output "schema_version"
+schema_version: "1.0"
+project:
+  name: "Anti-Washing-Pro"
+  spec_version: "v2.7-fixed"
+  language: "zh"
+  timezone: "Europe/Zurich"
+
+reproducibility:
+  random_seed: 42
+  deterministic: false
+  # If true, you should set torch deterministic flags and disable some optimizations.
+  # This can slow down inference.
+
+runtime:
+  device: "auto"          # auto | cpu | cuda | mps
+  dtype: "auto"           # auto | float32 | float16 | bfloat16
+  num_workers: 0
+  batch_size_embed: 64
+  batch_size_rerank: 32
+  max_chars_per_segment: 300      # hard split very long sentences
+  max_segments_per_doc: 5000      # safety guard
+  timeout_seconds: 60
+
+paths:
+  workspace_dir: "workspace"
+  original_dir: "workspace/original"
+  suspect_dir: "workspace/suspect"
+  baseline_dir: "workspace/baseline"
+  outputs_dir: "workspace/outputs"
+  cache_dir: "workspace/outputs/cache"
+  reports_dir: "workspace/outputs/reports"
+  json_dir: "workspace/outputs/json"
+
+cache:
+  enabled: true
+  sqlite_path: "workspace/outputs/cache/cache.sqlite"
+  # cache keys should include: model names, config hash, and text hash
+  store_embeddings: true
+  store_rerank_scores: true
+
+logging:
+  level: "INFO"           # DEBUG | INFO | WARNING | ERROR
+  log_to_file: true
+  log_file: "workspace/outputs/run.log"
+
+models:
+  # Recall model (bi-encoder) for fast top-k candidate retrieval
+  bi_encoder:
+    name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    normalize_embeddings: true
+
+  # Main scoring model (reranker). The raw output may be a logit.
+  reranker:
+    name: "BAAI/bge-reranker-v2-m3"
+    score_normalization: "sigmoid"     # sigmoid | none
+    # rerank_score = sigmoid(logit) to map into (0,1)
+
+  # Optional model for token-level explain/highlight (not required in early phases)
+  token_explain_model:
+    enabled: false
+    name: "hfl/chinese-roberta-wwm-ext-large"
+
+preprocess:
+  input_formats: ["txt", "md"]
+  strip_html: true
+  normalize_fullwidth_halfwidth: true
+  normalize_whitespace: true
+  keep_punctuation: true
+  stopword_removed: false
+
+  segmentation:
+    method: "jieba_punc_preserved"   # jieba_punc_preserved | regex_punc
+    # When a sentence is too long, split it by punctuation first, then by max_chars_per_segment.
+    long_sentence_split: true
+
+alignment:
+  # top-k retrieval per source segment
+  top_k: 5
+  # minimum recall cosine similarity to accept a candidate into rerank stage
+  recall_cos_min: 0.20
+  # keep only the best target per source for metrics (Coverage/Mean/Tau)
+  keep_best_match_only: true
+
+  success_threshold:
+    # A source segment is "successfully aligned" if rerank_score >= rerank_success_min
+    rerank_success_min: 0.85
+
+  mean_sim:
+    # Mean(Sim) is computed only over successful aligned pairs
+    # Clip low scores to reduce noise dilution
+    sim_clip_floor: 0.70
+
+structure:
+  enabled: true
+  # Path search uses only candidate pairs (top-k) to avoid O(m*n) heavy compute.
+  path_search:
+    method: "monotonic_dp"       # monotonic_dp | dtw_like
+    allow_skip: true
+    allow_one_to_many: true
+    allow_many_to_one: true
+    max_skip_per_10: 6           # heuristic guard for extreme jumps
+
+  kendall_tau:
+    min_points: 8
+    # If tau computation fails or points < min_points, use default
+    default_tau_mapped: 0.50
+    # tau_mapped = (tau + 1) / 2
+    mapping: "linear_-1_1_to_0_1"
+
+scoring:
+  # S = wC*C + wT*T + wM*M, in [0,1]
+  weights:
+    coverage: 0.45
+    tau_mapped: 0.35
+    mean_sim: 0.20
+
+baseline:
+  enabled: true
+  # baseline gating uses global doc embedding similarity between A and baseline docs
+  doc_embedding:
+    method: "bi_encoder_mean_of_segments"
+    cosine_threshold_start: 0.32
+    cosine_threshold_step: 0.02
+    cosine_threshold_min: 0.22
+
+  length_filter:
+    # keep docs whose char length is within [lenA*min_ratio, lenA*max_ratio]
+    min_ratio: 0.50
+    max_ratio: 2.00
+
+  redundancy_filter:
+    enabled: true
+    cosine_threshold: 0.95
+    keep: "longer"    # longer | first
+
+  sample_size:
+    target_n: 50
+    min_n: 20
+
+  fallback:
+    enabled: true
+    # If effective_n < min_n, lower cosine threshold until min_n or cosine_threshold_min.
+    warn_if_still_insufficient: true
+
+public_domain_filter:
+  enabled: true
+  # Build common phrase list from baseline (only from gated baseline set)
+  phrase_mining:
+    char_ngram_min: 2
+    char_ngram_max: 6
+    # phrase is "common" if it appears in >= df_ratio of baseline docs
+    df_ratio_common: 0.20
+    max_phrases: 20000
+
+  sentence_flagging:
+    # a sentence is public-domain-like if common phrases cover >= coverage_ratio of the sentence
+    coverage_ratio: 0.35
+
+  handling:
+    # do NOT delete sentence from path; only downweight score
+    downweight_factor: 0.70
+
+forensics:
+  enabled: true
+  context_window_sentences: 1
+
+  number_overlap:
+    enabled: true
+    # Count number overlap only if the aligned pair is reasonably similar
+    min_rerank_for_count: 0.80
+    normalize_numbers: true
+
+  rare_word:
+    enabled: true
+    # Rare if df <= max(min_abs, ceil(max_ratio * N))
+    df_max_ratio: 0.02
+    df_min_abs: 2
+    tokenizer: "jieba"
+    min_token_len: 2
+
+  shared_error:
+    enabled: true
+    patterns:
+      - "([，,。.!！?？])\\1{1,}"   # repeated punctuation
+      - "\\s{3,}"                 # too many spaces
+      - "（\\s*）"                 # empty parentheses
+
+  key_evidence:
+    # If any evidence hits, the aligned item can be marked as key evidence.
+    mark_if_any_hit: true
+
+risk_levels:
+  # Match in order: VERY_HIGH -> HIGH -> MEDIUM -> LOW
+  very_high:
+    quantile_min: 0.995
+    s_total_min: 0.82
+    coverage_min: 0.70
+    tau_mapped_min: 0.80
+    key_cnt_min: 3
+    conclusion: "结构同步明显，且有多处低概率细节重合。"
+
+  high:
+    quantile_min: 0.990
+    s_total_min: 0.75
+    coverage_min: 0.60
+    tau_mapped_min: 0.70
+    key_cnt_min: 2
+    conclusion: "相似度显著离群，逻辑顺序高度一致。"
+
+  medium:
+    quantile_min: 0.950
+    s_total_min: 0.65
+    key_cnt_min: 1
+    conclusion: "存在相似点，建议人工复核是否为公知表达或同题材常见写法。"
+
+  low:
+    conclusion: "相似度处于常见波动范围内。"
+
+report:
+  disclaimer: "本报告由 NLP 算法生成，旨在提供技术取证支持，建议结合人工核审。"
+  output_formats:
+    json: true
+    html: true
+    pdf: false
+
+  ui:
+    streamlit_enabled: true
+    show_alignment_table: true
+    show_sankey: true
+    show_baseline_hist: true
+    show_key_evidence_panel: true
+    max_alignment_rows: 500
+
+  highlighting:
+    enabled: true
+    mode: "simple_overlap"   # simple_overlap | token_explain
